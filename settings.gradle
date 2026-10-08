@@ -1,0 +1,13 @@
+// foojay-resolver 让 Gradle 能自动下载缺失的 JDK 工具链。
+//
+// 这个工程需要三个 JDK：
+//   * JDK 21 —— 编译目标（Minecraft 1.21.4 用 Java 21）
+//   * JDK 25 —— ForgeGradle 7 内部 mavenizer 工具自己的运行环境
+//   * JDK 8  —— 处理 Mojang 官方 mappings（ForgeGradle 的硬性依赖）
+// 缺哪个都会报 "Cannot find a Java installation ... matching: {languageVersion=NN}"。
+// 有了这个 resolver，Gradle 会在需要时自动从 Adoptium 下载，不需要你手动装。
+plugins {
+    id 'org.gradle.toolchains.foojay-resolver-convention' version '1.0.0'
+}
+
+rootProject.name = 'woolipic'

@@ -1,0 +1,32 @@
+modLoader="javafml"
+loaderVersion="[1,)"
+license="MIT"
+clientSideOnly=true
+
+[[mods]]
+modId="woolipic"
+version="1.0.0"
+displayName="羊毛画生成器 WooliPic"
+authors="woolipic"
+description='''
+在游戏里选一张本地图片，它会用 16 色羊毛按人眼感知最接近的颜色，
+在你的世界里一格一格地把这张图搭出来。
+
+用法：输入 /woolipic 打开界面 —— 选图、看实时预览、调尺寸和朝向，
+点「开始放置」即可。颜色匹配用 CIEDE2000 色差公式，比简单的 RGB 距离
+准得多；128x85 的画面只需几百条指令。
+'''
+
+[[dependencies.woolipic]]
+    modId="forge"
+    mandatory=true
+    versionRange="[54,)"
+    ordering="NONE"
+    side="CLIENT"
+
+[[dependencies.woolipic]]
+    modId="minecraft"
+    mandatory=true
+    versionRange="[1.21.4,1.22)"
+    ordering="NONE"
+    side="CLIENT"
