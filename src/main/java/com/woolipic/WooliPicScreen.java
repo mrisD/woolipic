@@ -128,6 +128,16 @@ public class WooliPicScreen extends Screen {
     /** 图片列表的滚动位置。 */
     private int listScroll;
 
+    // 图片列表的几何信息，由 render() 每帧写入，mouseClicked() 用它做命中判定。
+    // 之所以要记下来而不是在点击时重算：列表的起始位置取决于预览框高度，
+    // 而预览框高度又依赖当前屏幕尺寸，重算容易和绘制时的取值不一致。
+    private int listTop;
+    private int listRowH = 10;
+    private int listRows;
+    private int listStart;
+    private int listLeft;
+    private int listWidth;
+
     public WooliPicScreen() {
         super(Component.literal("羊毛画生成器"));
     }
@@ -768,24 +778,40 @@ public class WooliPicScreen extends Screen {
         // --- 图片列表 ---
         int listY = boxTop + boxH + 6;
         graphics.drawString(font,
-            Component.literal("最近的图片（" + imageFiles.size() + "）"),
+            Component.literal("点名字即可选中（共 " + imageFiles.size() + " 张）"),
             leftX, listY, TEXT_DIM, false);
         listY += font.lineHeight + 1;
         int rowHeight = font.lineHeight + 1;
         int maxRows = Math.max(1, (panelBottom - 12 - listY) / rowHeight);
         int start = Math.min(listScroll, Math.max(0, imageFiles.size() - maxRows));
+
+        // 把列表几何记下来，mouseClicked 要用它把点击位置换算成条目下标。
+        // （之前这里只是画文字、没注册点击，所以点了没反应——这是实现疏漏。）
+        listTop = listY;
+        listRowH = rowHeight;
+        listRows = maxRows;
+        listStart = start;
+        listLeft = leftX;
+        listWidth = leftW;
+
         for (int i = 0; i < maxRows && start + i < imageFiles.size(); i++) {
             int idx = start + i;
             Path p = imageFiles.get(idx);
             boolean sel = idx == selectedIndex;
+            boolean hover = mouseX >= leftX && mouseX <= leftX + leftW
+                && mouseY >= listY && mouseY < listY + rowHeight;
             if (sel) {
                 graphics.fill(leftX - 2, listY - 1, leftX + leftW, listY + rowHeight - 2, PANEL);
+            } else if (hover) {
+                // 悬停高亮：让"这里能点"变得明显，否则用户根本不知道可以点
+                graphics.fill(leftX - 2, listY - 1, leftX + leftW, listY + rowHeight - 2,
+                    0x20FFFFFF);
             }
             // 文件名过长时截断，避免压到右栏
             String name = font.plainSubstrByWidth(
                 p.getFileName().toString(), Math.max(20, leftW - 6));
             graphics.drawString(font, Component.literal(name), leftX, listY,
-                sel ? ACCENT : TEXT, false);
+                sel ? ACCENT : (hover ? 0xFFFFFF80 : TEXT), false);
             listY += rowHeight;
         }
 
@@ -880,6 +906,33 @@ public class WooliPicScreen extends Screen {
     }
 
     // ------------------------------------------------------------ 布局与事件
+
+    /**
+     * 点击左栏图片列表里的名字就选中那张图。
+     *
+     * <p>列表是用文字画的，不像普通控件那样自带点击处理，所以要自己算命中区域。
+     * 几何信息由 render() 每帧写进 list* 字段，这里直接复用，保证和看到的一致。
+     */
+    @Override
+    public boolean mouseClicked(double mouseX, double mouseY, int button) {
+        if (button == 0
+            && mouseX >= listLeft && mouseX <= listLeft + listWidth
+            && mouseY >= listTop) {
+            int row = (int) ((mouseY - listTop) / Math.max(1, listRowH));
+            if (row >= 0 && row < listRows) {
+                int idx = listStart + row;
+                if (idx >= 0 && idx < imageFiles.size()) {
+                    selectedIndex = idx;
+                    Path p = imageFiles.get(idx);
+                    WooliPic.rememberImage(p);
+                    selectFile(p);
+                    setStatus("已选中：" + p.getFileName(), false);
+                    return true;
+                }
+            }
+        }
+        return super.mouseClicked(mouseX, mouseY, button);
+    }
 
     @Override
     public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {
