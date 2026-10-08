@@ -108,6 +108,13 @@ public class WooliPicScreen extends Screen {
     private EditBox widthBox;
     private EditBox heightBox;
     private EditBox distanceBox;
+    /** 手动粘贴图片路径用的输入框。系统文件对话框不可靠时的兜底手段。 */
+    private EditBox pathBox;
+
+    /** 可点选的图片目录（图片/下载/桌面/截图…），以及当前选中的那个。 */
+    private List<ImageFinder.Folder> folders = List.of();
+    private ImageFinder.Folder currentFolder;
+    private final List<Button> folderButtons = new ArrayList<>();
     private Button browseButton;
     private Button buildButton;
     private Button colorModeButton;
@@ -116,6 +123,7 @@ public class WooliPicScreen extends Screen {
     private Button autoHeightButton;
     private Button prevButton;
     private Button nextButton;
+    private Button loadPathButton;
 
     /** 图片列表的滚动位置。 */
     private int listScroll;
@@ -177,8 +185,12 @@ public class WooliPicScreen extends Screen {
                 swatchPerRow--;
             }
             int rows = (WoolPalette.size() + swatchPerRow - 1) / swatchPerRow;
+            // 右栏行数顺序：路径输入 / 系统对话框 / 翻页 / 宽高 / 高度自动 /
+            // 算法 / 裁剪 / 增强 / 色块区 / 距离 / 开始放置
             swatchY = panelTop
-                + (rowH + 2) * 2            // 浏览 + 翻页两行
+                + (18 + gap + 2)            // 路径输入行
+                + (rowH + 2)                // 系统对话框按钮
+                + (rowH + 2)                // 翻页
                 + (18 + gap + 2)            // 宽高输入框
                 + rowH * 4                  // 高度自动 / 算法 / 裁剪 / 增强
                 + 4
@@ -202,7 +214,9 @@ public class WooliPicScreen extends Screen {
         swatchPerRow = Math.max(2, Math.min(8, rightPanelW / (swatchSize + 20)));
         swatchY = 0; // 精简模式不画颜色开关
         contentBottom = panelTop
-            + (rowH + 2) * 2        // 浏览 + 翻页
+            + (18 + gap + 2)        // 路径输入
+            + (rowH + 2)            // 系统对话框
+            + (rowH + 2)            // 翻页
             + (18 + gap + 2)        // 宽高
             + rowH                  // 高度自动
             + rowH                  // 算法
@@ -229,12 +243,70 @@ public class WooliPicScreen extends Screen {
 
         computeLayout();
 
+        // --- 左栏：图片目录选择条 ---
+        // 放在左栏顶部，直接点目录就能看到里面的图片。不依赖任何系统对话框。
+        folders = ImageFinder.commonFolders();
+        if (currentFolder == null && !folders.isEmpty()) {
+            // 默认选第一个非空的目录，省得用户进去还要再点一次
+            currentFolder = folders.get(0);
+            for (ImageFinder.Folder f : folders) {
+                if (!ImageFinder.listImages(f.path()).isEmpty()) {
+                    currentFolder = f;
+                    break;
+                }
+            }
+        }
+
+        int fx = leftPanelX;
+        int fy = panelTop;
+        int fh = Math.max(14, Math.min(18, widgetH - 4));
+        int fGap = 3;
+        int avail = leftPanelW;
+        folderButtons.clear();
+        for (ImageFinder.Folder folder : folders) {
+            int labelW = font.width(folder.label()) + 8;
+            if (fx + labelW > leftPanelX + avail && folderButtons.size() > 0) {
+                break; // 一行放不下就不放了，列表里仍然能看到其它目录的图
+            }
+            final ImageFinder.Folder target = folder;
+            Button b = Button.builder(Component.literal(folder.label()), btn -> switchFolder(target))
+                .bounds(fx, fy, labelW, fh).build();
+            addRenderableWidget(b);
+            folderButtons.add(b);
+            fx += labelW + fGap;
+        }
+        int folderBarH = fh;
+
         int x = rightPanelX;
         int w = widgetW;
+
+        // --- 右栏：手动输入路径（系统对话框不可靠时的兜底）---
         int y = panelTop;
+        pathBox = new EditBox(font, x, y, Math.max(60, w - 54), 18,
+            Component.literal("图片路径"));
+        pathBox.setMaxLength(400);
+        pathBox.setHint(Component.literal("也可直接粘贴图片路径"));
+        pathBox.setResponder(s -> {
+            Path p = ImageFinder.parseUserPath(s);
+            if (p != null && !p.equals(selectedFile)) {
+                loadFromPath(p, false);
+            }
+        });
+        addRenderableWidget(pathBox);
+
+        loadPathButton = Button.builder(Component.literal("载入"), b -> {
+            Path p = ImageFinder.parseUserPath(pathBox.getValue());
+            if (p == null) {
+                setStatus("这个路径找不到图片文件，检查一下是否写全了（含扩展名）", true);
+            } else {
+                loadFromPath(p, true);
+            }
+        }).bounds(x + Math.max(60, w - 54) + 4, y, 50, 18).build();
+        addRenderableWidget(loadPathButton);
+        y += 18 + gap + 2;
 
         browseButton = Button.builder(
-            Component.literal("浏览本地图片…"), b -> openFileDialog()
+            Component.literal("系统文件对话框（可能不可用）"), b -> openFileDialog()
         ).bounds(x, y, w, widgetH).build();
         addRenderableWidget(browseButton);
         y += rowH + 2;
@@ -382,33 +454,28 @@ public class WooliPicScreen extends Screen {
 
     // ------------------------------------------------------------ 文件列表
 
+    /**
+     * 刷新左栏的图片列表：显示当前选中目录里的图片。
+     *
+     * <p>以前这里只列模组自己的 images 目录，用户必须先通过系统对话框把图导进来，
+     * 对话框一坏就彻底没法选图。现在默认直接列常见图片目录（图片/下载/桌面/截图），
+     * 完全不依赖任何系统 API。
+     */
     private void refreshFileList() {
-        imageFiles.clear();
-        Path dir = Config.getImagesDir();
-        if (dir != null && Files.isDirectory(dir)) {
-            try (var stream = Files.list(dir)) {
-                stream.filter(Files::isRegularFile)
-                    .filter(WooliPicScreen::looksLikeImage)
-                    .sorted(Comparator.comparingLong(WooliPicScreen::lastModified).reversed())
-                    .forEach(imageFiles::add);
-            } catch (Exception e) {
-                WooliPic.LOGGER.warn("读取图片目录失败", e);
+        List<Path> listed = ImageFinder.listImages(
+            currentFolder == null ? null : currentFolder.path());
+
+        // 把已经导入过模组目录的历史图片也并进来，方便回看
+        Path own = Config.getImagesDir();
+        if (own != null && (currentFolder == null || !own.equals(currentFolder.path()))) {
+            for (Path p : ImageFinder.listImages(own)) {
+                if (!listed.contains(p)) {
+                    listed.add(p);
+                }
             }
         }
-    }
-
-    private static boolean looksLikeImage(Path p) {
-        String n = p.getFileName().toString().toLowerCase();
-        return n.endsWith(".png") || n.endsWith(".jpg") || n.endsWith(".jpeg")
-            || n.endsWith(".bmp") || n.endsWith(".gif");
-    }
-
-    private static long lastModified(Path p) {
-        try {
-            return Files.getLastModifiedTime(p).toMillis();
-        } catch (Exception e) {
-            return 0;
-        }
+        imageFiles.clear();
+        imageFiles.addAll(listed);
     }
 
     private void stepSelection(int delta) {
@@ -430,60 +497,85 @@ public class WooliPicScreen extends Screen {
         scheduleConvert();
     }
 
+    /** 切换左栏列表显示的目录。 */
+    private void switchFolder(ImageFinder.Folder folder) {
+        currentFolder = folder;
+        listScroll = 0;
+        refreshFileList();
+        // 目录里如果正好是当前选中的图，把高亮对回去
+        if (selectedFile != null) {
+            selectedIndex = imageFiles.indexOf(selectedFile);
+        }
+        setStatus("已切换到「" + folder.label() + "」，共 "
+            + imageFiles.size() + " 张图片", false);
+    }
+
     /**
-     * 打开系统文件选择框，选完复制一份进模组目录。
+     * 从路径载入图片。
      *
-     * <p>两个容易踩的坑：
-     * <ul>
-     *   <li>Windows 上 {@code setFilenameFilter} 会被忽略（它是给 X11 用的），
-     *       必须在 {@code setFile} 里给通配符才会显示"只看图片"的效果。</li>
-     *   <li>对话框不能建在渲染线程上，否则和 Minecraft 的渲染循环互相阻塞，
-     *       表现就是"点了没反应"。这里开独立线程，并且用 setLocationRelativeTo(null)
-     *       让它居中显示在屏幕上、出现在游戏窗口前面。</li>
-     * </ul>
+     * @param importCopy true 时把它复制进模组目录（用户主动选的文件）；
+     *                   false 时直接用原文件（用于输入框里逐字符试探，避免刷屏复制）
+     */
+    private void loadFromPath(Path path, boolean importCopy) {
+        Path actual = path;
+        if (importCopy) {
+            try {
+                actual = Config.importImage(path);
+                refreshFileList();
+                selectedIndex = imageFiles.indexOf(actual);
+            } catch (Exception e) {
+                WooliPic.LOGGER.warn("复制图片失败，直接用原文件: {}", e.toString());
+                actual = path;
+            }
+        }
+        WooliPic.rememberImage(actual);
+        selectFile(actual);
+        setStatus("已载入：" + actual.getFileName(), false);
+    }
+
+    /**
+     * 打开系统文件选择框（可选功能，失败不影响使用）。
+     *
+     * <p>实测在某些环境下 AWT 的对话框在游戏进程里显示不出来——日志表现为
+     * {@code openFileDialog} 被调用很多次但既没有"选中"也没有"取消"记录。
+     * 所以这里把所有异常都接住并写日志，同时界面上提供了"目录点选"和
+     * "手动输入路径"两条不依赖 AWT 的路。
+     *
+     * <p>另外 Windows 上 {@code setFilenameFilter} 会被忽略（那是给 X11 用的），
+     * 必须用 {@code setFile} 给通配符才真正过滤。
      */
     private void openFileDialog() {
         WooliPic.LOGGER.info("打开文件选择对话框…");
         Thread t = new Thread(() -> {
-            java.awt.FileDialog dialog = new java.awt.FileDialog(
-                (java.awt.Frame) null, "选择一张图片", java.awt.FileDialog.LOAD
-            );
-            // Windows 只认 setFile 的通配符
-            dialog.setFile("*.png;*.jpg;*.jpeg;*.bmp;*.gif");
-            dialog.setMultipleMode(false);
-            dialog.setLocationRelativeTo(null);
-
-            // 从上一次用过的图片所在目录开始，省得每次从头翻
-            if (selectedFile != null && selectedFile.getParent() != null) {
-                dialog.setDirectory(selectedFile.getParent().toString());
-            }
-
-            dialog.setVisible(true);
-
-            String dir = dialog.getDirectory();
-            String file = dialog.getFile();
-            if (dir == null || file == null || file.isEmpty()) {
-                WooliPic.LOGGER.info("用户取消了文件选择");
-                return;
-            }
-            File chosen = new File(dir, file);
-            WooliPic.LOGGER.info("选中文件: {}", chosen);
             try {
-                Path imported = Config.importImage(chosen.toPath());
-                Minecraft.getInstance().execute(() -> {
-                    refreshFileList();
-                    selectedIndex = imageFiles.indexOf(imported);
-                    if (selectedIndex < 0 && Files.isRegularFile(imported)) {
-                        imageFiles.add(0, imported);
-                        selectedIndex = 0;
-                    }
-                    WooliPic.rememberImage(imported);
-                    selectFile(imported);
-                });
-            } catch (Exception e) {
-                WooliPic.LOGGER.error("导入图片失败", e);
-                Minecraft.getInstance().execute(
-                    () -> setStatus("导入图片失败：" + e.getMessage(), true));
+                java.awt.FileDialog dialog = new java.awt.FileDialog(
+                    (java.awt.Frame) null, "选择一张图片", java.awt.FileDialog.LOAD
+                );
+                dialog.setFile("*.png;*.jpg;*.jpeg;*.bmp;*.gif");
+                dialog.setMultipleMode(false);
+                dialog.setLocationRelativeTo(null);
+                if (selectedFile != null && selectedFile.getParent() != null) {
+                    dialog.setDirectory(selectedFile.getParent().toString());
+                } else if (currentFolder != null) {
+                    dialog.setDirectory(currentFolder.path().toString());
+                }
+                dialog.setVisible(true);
+
+                String dir = dialog.getDirectory();
+                String file = dialog.getFile();
+                if (dir == null || file == null || file.isEmpty()) {
+                    WooliPic.LOGGER.info("用户取消了文件选择");
+                    return;
+                }
+                Path chosen = Path.of(dir, file);
+                WooliPic.LOGGER.info("选中文件: {}", chosen);
+                Minecraft.getInstance().execute(() -> loadFromPath(chosen, true));
+            } catch (Throwable e) {
+                // 关键：以前这里没接异常，导致后台线程静默死掉、日志里什么都看不到。
+                WooliPic.LOGGER.error("系统文件对话框不可用（请改用左栏目录点选或手动输入路径）", e);
+                Minecraft.getInstance().execute(() -> setStatus(
+                    "系统文件对话框在这台机器上用不了。请用左栏的目录按钮点选图片，"
+                    + "或把路径粘贴到上面的输入框。", true));
             }
         }, "woolipic-file-dialog");
         t.setDaemon(true);
@@ -640,16 +732,20 @@ public class WooliPicScreen extends Screen {
         // 标题：左右两栏都画一个，明确分区
         graphics.drawCenteredString(font, TITLE, width / 2, 8, ACCENT);
 
+        // 顶部的目录按钮条占了 panelTop 往下约 18 像素
+        int bodyTop = panelTop + 20;
+
         // --- 左栏：原图 / 羊毛效果 并排 ---
         int boxGap = Math.max(6, leftW / 20);
         int boxW = (leftW - boxGap) / 2;
         // 预览高度按可用空间算，并给底部的图片列表和状态栏留位置
         int listReserve = Math.min(90, Math.max(40, height / 6));
-        int boxH = Math.max(50, Math.min(320, panelBottom - panelTop - listReserve - 26));
-        int boxTop = panelTop + 12;
+        int boxH = Math.max(40, Math.min(320, panelBottom - bodyTop - listReserve - 26));
+        int boxTop = bodyTop + 12;
 
-        graphics.drawString(font, LBL_SOURCE, leftX, panelTop, TEXT_DIM, false);
-        graphics.drawString(font, LBL_PREVIEW, leftX + boxW + boxGap, panelTop, TEXT_DIM, false);
+        graphics.drawString(font, LBL_SOURCE, leftX, bodyTop + 1, TEXT_DIM, false);
+        graphics.drawString(font, LBL_PREVIEW, leftX + boxW + boxGap, bodyTop + 1,
+            TEXT_DIM, false);
 
         drawPanel(graphics, leftX, boxTop, boxW, boxH);
         drawPanel(graphics, leftX + boxW + boxGap, boxTop, boxW, boxH);
