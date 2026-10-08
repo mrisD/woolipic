@@ -66,34 +66,43 @@ public final class Builder {
     /**
      * 根据玩家当前朝向计算放置原点与水平方向。
      *
-     * <p>墙面垂直于玩家的视线方向，法线朝玩家，所以玩家站在原地看着正前方就能看到
-     * 画面正面。图片的"向右"映射成玩家的右手方向，向上映射成 +Y。
+     * <p>坐标系约定（这段是严格验算过的，改动前请先跑 tools 里的方向探针）：
+     * <ul>
+     *   <li>{@code player.getDirection()} 返回的就是玩家<b>面朝</b>的方向
+     *       （yaw=0 时是 south）。所以"朝前推出去"必须直接用 facing，
+     *       用 getOpposite() 会把墙盖到玩家背后——这正是之前报的 bug。</li>
+     *   <li>图片 x 增大要映射到观察者的右手边。观察者看墙时，
+     *       右手方向 = {@code cross(up, 面朝)}，而在 Minecraft 的水平朝向里
+     *       它恰好等于 {@code 面朝.getClockWise()}。所以用 getClockWise 是对的，
+     *       换成 getCounterClockWise 会让画面左右镜像。</li>
+     *   <li>图片 y（从上往下）映射到世界 +Y 的反向，即顶行落在最高处。</li>
+     * </ul>
      *
      * @param distance 墙面离玩家多少格
      */
     public static Placement computePlacement(Player player, WoolImage image, int distance) {
+        // 玩家面朝的方向，同时也是"从玩家指向墙"的水平方向
         Direction facing = player.getDirection();
-
-        // 墙面法线朝玩家 = 与玩家朝向相反
-        Direction normal = facing.getOpposite();
-        // 水平右方向：图片 x 增大时往玩家右手边走。
-        // 注意 Minecraft 的朝向常量是按"实体朝向"定义的，顺时针才是右手方向。
-        Direction right = facing.getClockWise();
+        // 朝前的偏移方向：就是面朝方向本身
+        Direction forward = facing;
+        // 图片 x 的方向（观察者的右手边）
+        Direction imgRight = facing.getClockWise();
 
         int px = (int) Math.floor(player.getX());
         int py = (int) Math.floor(player.getY());
         int pz = (int) Math.floor(player.getZ());
 
-        // 墙面中心正对玩家，所以原点要沿着右方向往回退半个宽度，再沿法线推出去
+        // 墙面中心正对玩家：先沿图片右方向往回退半个宽度（让图片第 0 列落在观察者左手边），
+        // 再沿面朝方向推出 distance 格
         int halfWidth = image.width / 2;
-        int ox = px + normal.getStepX() * distance - right.getStepX() * halfWidth;
-        int oz = pz + normal.getStepZ() * distance - right.getStepZ() * halfWidth;
+        int ox = px + forward.getStepX() * distance - imgRight.getStepX() * halfWidth;
+        int oz = pz + forward.getStepZ() * distance - imgRight.getStepZ() * halfWidth;
         int oy = py;
 
         return new Placement(
             ox, oy, oz,
-            right.getStepX(), right.getStepZ(),
-            normal.getStepX(), normal.getStepZ(),
+            imgRight.getStepX(), imgRight.getStepZ(),
+            forward.getStepX(), forward.getStepZ(),
             image.width, image.height
         );
     }
@@ -101,14 +110,16 @@ public final class Builder {
     /** 放置位置与朝向。 */
     public static final class Placement {
         public final int originX, originY, originZ;
+        /** 图片 x 增大时世界坐标的步进方向（观察者的右手边）。 */
         public final int rightX, rightZ;
-        public final int normalX, normalZ;
+        /** 从玩家指向墙的水平方向（就是玩家面朝的方向）。 */
+        public final int forwardX, forwardZ;
         public final int width, height;
 
         Placement(
             int ox, int oy, int oz,
             int rightX, int rightZ,
-            int normalX, int normalZ,
+            int forwardX, int forwardZ,
             int width, int height
         ) {
             this.originX = ox;
@@ -116,8 +127,8 @@ public final class Builder {
             this.originZ = oz;
             this.rightX = rightX;
             this.rightZ = rightZ;
-            this.normalX = normalX;
-            this.normalZ = normalZ;
+            this.forwardX = forwardX;
+            this.forwardZ = forwardZ;
             this.width = width;
             this.height = height;
         }
@@ -145,10 +156,24 @@ public final class Builder {
             return far > MAX_COORD;
         }
 
+        /** 画面所在方位的描述，用来告诉玩家墙立在哪一侧。 */
+        private String normalName() {
+            if (forwardZ > 0) {
+                return "南侧";
+            }
+            if (forwardZ < 0) {
+                return "北侧";
+            }
+            if (forwardX > 0) {
+                return "东侧";
+            }
+            return "西侧";
+        }
+
         public String describe() {
             return String.format(
-                "原点 (%d, %d, %d)，向右 (%d, %d)，画面 %d x %d 格",
-                originX, originY, originZ, rightX, rightZ, width, height
+                "画面 %d x %d 格，立在你面向的%s，左下角在 (%d, %d, %d)",
+                width, height, normalName(), originX, originY, originZ
             );
         }
     }
