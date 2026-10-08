@@ -294,12 +294,16 @@ public class WooliPicScreen extends Screen {
         int y = panelTop;
         pathBox = new EditBox(font, x, y, Math.max(60, w - 54), 18,
             Component.literal("图片路径"));
+        // 注意顺序：EditBox 的 maxLength 默认只有 32 个字符，而 Windows 图片路径
+        // 经常长得多（C:\Users\xxx\Pictures\<32位哈希>.png 就 60 字符）。
+        // 必须在设置 responder 之前放宽上限，否则 responder 收到的值已经被截断了。
         pathBox.setMaxLength(400);
         pathBox.setHint(Component.literal("也可直接粘贴图片路径"));
         pathBox.setResponder(s -> {
             Path p = ImageFinder.parseUserPath(s);
+            // 只有解析成功才载入；半截路径（用户还在输入）就静静等着
             if (p != null && !p.equals(selectedFile)) {
-                loadFromPath(p, false);
+                loadImage(p, false);
             }
         });
         addRenderableWidget(pathBox);
@@ -309,7 +313,7 @@ public class WooliPicScreen extends Screen {
             if (p == null) {
                 setStatus("这个路径找不到图片文件，检查一下是否写全了（含扩展名）", true);
             } else {
-                loadFromPath(p, true);
+                loadImage(p, true);
             }
         }).bounds(x + Math.max(60, w - 54) + 4, y, 50, 18).build();
         addRenderableWidget(loadPathButton);
@@ -523,10 +527,15 @@ public class WooliPicScreen extends Screen {
     /**
      * 从路径载入图片。
      *
+     * <p>注意这里接收的是 {@link Path} 而不是字符串：列表点选、目录切换拿到的是
+     * 真实的 Path 对象，直接用它就不会经过文本框。之前图省事把路径写进 EditBox
+     * 再靠 responder 回调，结果被 maxLength 截断（默认 32 字符），
+     * 长文件名一律失败。
+     *
      * @param importCopy true 时把它复制进模组目录（用户主动选的文件）；
-     *                   false 时直接用原文件（用于输入框里逐字符试探，避免刷屏复制）
+     *                   false 时直接用原文件（列表点选，避免每次都复制一份）
      */
-    private void loadFromPath(Path path, boolean importCopy) {
+    private void loadImage(Path path, boolean importCopy) {
         Path actual = path;
         if (importCopy) {
             try {
@@ -540,7 +549,13 @@ public class WooliPicScreen extends Screen {
         }
         WooliPic.rememberImage(actual);
         selectFile(actual);
-        setStatus("已载入：" + actual.getFileName(), false);
+        // 把路径回填到输入框，方便用户看到/复制完整路径。
+        // 此时 maxLength 已经放宽，不会被截断。
+        if (pathBox != null) {
+            pathBox.setValue(actual.toAbsolutePath().toString());
+        }
+        // 真实尺寸要等转换完才知道，这里只确认文件已选中
+        setStatus("已选中：" + actual.getFileName() + "，正在转换…", false);
     }
 
     /**
@@ -579,7 +594,7 @@ public class WooliPicScreen extends Screen {
                 }
                 Path chosen = Path.of(dir, file);
                 WooliPic.LOGGER.info("选中文件: {}", chosen);
-                Minecraft.getInstance().execute(() -> loadFromPath(chosen, true));
+                Minecraft.getInstance().execute(() -> loadImage(chosen, true));
             } catch (Throwable e) {
                 // 关键：以前这里没接异常，导致后台线程静默死掉、日志里什么都看不到。
                 WooliPic.LOGGER.error("系统文件对话框不可用（请改用左栏目录点选或手动输入路径）", e);
